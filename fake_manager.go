@@ -16,6 +16,7 @@ import (
 	k8s_api_meta "k8s.io/apimachinery/pkg/api/meta"
 	k8s_api_runtime "k8s.io/apimachinery/pkg/runtime"
 	k8s_go_rest "k8s.io/client-go/rest"
+	k8s_go_tools_events "k8s.io/client-go/tools/events"
 	k8s_go_tools_record "k8s.io/client-go/tools/record"
 	k8s_ctr_cache "sigs.k8s.io/controller-runtime/pkg/cache"
 	k8s_ctr_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +25,7 @@ import (
 	k8s_ctr_healthz "sigs.k8s.io/controller-runtime/pkg/healthz"
 	k8s_ctr_manager "sigs.k8s.io/controller-runtime/pkg/manager"
 	k8s_ctr_webhook "sigs.k8s.io/controller-runtime/pkg/webhook"
+	k8s_ctr_webhook_conversion "sigs.k8s.io/controller-runtime/pkg/webhook/conversion"
 )
 
 var _stopContextTimeoutDefault = 5 * time.Second
@@ -103,19 +105,19 @@ func NewDefaultFakeClusterCtr(ctx context.Context, params DefaultFakeClusterCtrP
 }
 
 // Start is a convenience function to start the controller manager and the fake client cache.
-// Start will block until the context is done, at which point it will stop the controller manager and the fake client cache.
+// Start blocks until ctx is cancelled. The manager is stopped first so controllers release watches
+// before Client.Stop tears down the shared tracker; running those in parallel deadlocked or hung tests.
 func (f *FakeClusterCtr) Start(ctx context.Context) error {
-	wg := errgroup.Group{}
-	wg.Go(func() error {
-		return f.Manager.Start(ctx)
-	})
-	wg.Go(func() error {
-		<-ctx.Done()
-		stopCtx, stopCtxCancel := context.WithTimeout(context.Background(), f.stopContextTimeout)
-		defer stopCtxCancel()
-		return f.Client.Stop(stopCtx)
-	})
-	return wg.Wait()
+	mgrErr := f.Manager.Start(ctx)
+
+	stopCtx, stopCtxCancel := context.WithTimeout(context.Background(), f.stopContextTimeout)
+	defer stopCtxCancel()
+	stopErr := f.Client.Stop(stopCtx)
+
+	if mgrErr != nil {
+		return mgrErr
+	}
+	return stopErr
 }
 
 // FakeControllerManagerParams are the parameters for creating a new fake controller manager.
@@ -152,6 +154,14 @@ type FakeControllerManager struct {
 	mtx                   sync.Mutex
 	controllersStarted    map[string]struct{} // protected by mtx
 	controllersNewStarted chan struct{}
+
+	converterRegistry k8s_ctr_webhook_conversion.Registry
+}
+
+// noopEventsRecorder implements [k8s_go_tools_events.EventRecorder] for tests that do not care about events v1.
+type noopEventsRecorder struct{}
+
+func (noopEventsRecorder) Eventf(regarding k8s_api_runtime.Object, related k8s_api_runtime.Object, eventtype, reason, action, note string, args ...interface{}) {
 }
 
 var _ k8s_ctr_manager.Manager = (*FakeControllerManager)(nil)
@@ -175,6 +185,8 @@ func NewFakeControllerManager(
 		controllersStarted: make(map[string]struct{}),
 		// Buffered channel to serve as a non-blocking signal for notifying when a new controller has started.
 		controllersNewStarted: make(chan struct{}, 1),
+
+		converterRegistry: k8s_ctr_webhook_conversion.NewRegistry(),
 	}
 
 	// Create a special zap logger core that logs all messages with the name of the controller manager.
@@ -354,7 +366,22 @@ func (f *FakeControllerManager) GetControllerOptions() k8s_ctr_config.Controller
 	if f.trace {
 		f.logger.Debug("GetControllerOptions")
 	}
-	return k8s_ctr_config.Controller{}
+	co := f.controllerOptions
+	// Controllers must use the manager zap logger (with fakeLoggerCore) so onMessage can observe
+	// "Starting workers" and the "controller" field; otherwise DefaultFromConfig uses a nil logr
+	// and AwaitControllerStarted never unblocks.
+	if co.Logger.GetSink() == nil {
+		co.Logger = zapr.NewLogger(f.logger)
+	}
+	return co
+}
+
+// GetConverterRegistry implements [k8s_ctr_manager.Manager].
+func (f *FakeControllerManager) GetConverterRegistry() k8s_ctr_webhook_conversion.Registry {
+	if f.trace {
+		f.logger.Debug("GetConverterRegistry")
+	}
+	return f.converterRegistry
 }
 
 // GetEventRecorderFor implements [k8s_ctr_manager.Manager].
@@ -363,6 +390,14 @@ func (f *FakeControllerManager) GetEventRecorderFor(name string) k8s_go_tools_re
 		f.logger.Debug("GetEventRecorderFor", zap.String("name", name))
 	}
 	return f.cluster.EventRecorder
+}
+
+// GetEventRecorder implements [recorder.Provider].
+func (f *FakeControllerManager) GetEventRecorder(name string) k8s_go_tools_events.EventRecorder {
+	if f.trace {
+		f.logger.Debug("GetEventRecorder", zap.String("name", name))
+	}
+	return noopEventsRecorder{}
 }
 
 // GetFieldIndexer implements [k8s_ctr_manager.Manager].

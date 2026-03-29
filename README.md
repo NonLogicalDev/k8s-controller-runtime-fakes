@@ -1,6 +1,6 @@
-# k8sfakeutils
+# k8s-controller-runtime-fakes
 
-`k8sfakeutils` is a small Go testing toolkit for Kubernetes controllers.
+`k8s-controller-runtime-fakes` is a small Go testing toolkit for Kubernetes controllers.
 
 It provides fake, in-memory implementations of the main `controller-runtime` dependencies so you can test reconcile behavior without a real API server, envtest, or external side effects.
 
@@ -40,7 +40,7 @@ Without these, you can't:
 
 ### What this package adds
 
-`k8sfakeutils` builds on top of `controller-runtime/pkg/client/fake` and extends it with:
+`k8s-controller-runtime-fakes` builds on top of `controller-runtime/pkg/client/fake` and extends it with:
 
 - `FakeClientCache`: combines the fake client with an in-memory cache/informer layer
 - `FakeControllerManager`: allows you to register and start actual controllers in tests:

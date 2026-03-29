@@ -39,6 +39,8 @@ func TestAssertNoLeakyK8SGoroutines(t TestingTB, maxWait time.Duration) {
 func AwaitLeakyK8SGoroutines(ctx context.Context) error {
 	return awaitGoroutinesToFinish(ctx, 1*time.Millisecond,
 		"k8s.io/client-go/util/workqueue.(*Type).updateUnfinishedWorkLoop",
+		// controller-runtime v0.23+ typed priority queue (replaces classic workqueue in controllers)
+		"sigs.k8s.io/controller-runtime/pkg/controller/priorityqueue.(*priorityqueue",
 	)
 }
 

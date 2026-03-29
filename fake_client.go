@@ -240,6 +240,12 @@ func (c *FakeClientCache) GetInformerForKind(ctx context.Context, gvk k8s_api_ru
 	}, nil
 }
 
+// RemoveInformer implements [k8s_ctr_cache.Cache].
+// The fake does not retain informer instances; there is nothing to tear down.
+func (c *FakeClientCache) RemoveInformer(ctx context.Context, obj k8s_ctr_client.Object) error {
+	return nil
+}
+
 // IndexField implements [k8s_ctr_cache.Cache].
 // Registers a field indexer for the given object type and field name.
 func (c *FakeClientCache) IndexField(ctx context.Context, obj k8s_ctr_client.Object, field string, extractValue k8s_ctr_client.IndexerFunc) error {
@@ -285,6 +291,12 @@ type fakeClientCacheInformer struct {
 }
 
 var _ k8s_ctr_cache.Informer = (*fakeClientCacheInformer)(nil)
+
+// fakeResourceEventHandlerRegistration implements [k8s_go_tools_cache.ResourceEventHandlerRegistration].
+// controller-runtime's Kind source waits on registration.HasSynced(); a nil registration panics.
+type fakeResourceEventHandlerRegistration struct{}
+
+func (fakeResourceEventHandlerRegistration) HasSynced() bool { return true }
 
 func (i *fakeClientCacheInformer) implEventHandler(handler k8s_go_tools_cache.ResourceEventHandler) {
 	if i.parent != nil && i.parent.trace {
@@ -347,7 +359,7 @@ func (i *fakeClientCacheInformer) AddEventHandler(handler k8s_go_tools_cache.Res
 		i.logger.Info("AddEventHandler", zap.String("gvr", i.gvr.String()), zap.String("handler", fmt.Sprintf("%T", handler)))
 	}
 	i.implEventHandler(handler)
-	return nil, nil
+	return fakeResourceEventHandlerRegistration{}, nil
 }
 
 // AddEventHandlerWithResyncPeriod implements [k8s_ctr_cache.Informer].
@@ -356,7 +368,29 @@ func (i *fakeClientCacheInformer) AddEventHandlerWithResyncPeriod(handler k8s_go
 		i.logger.Info("AddEventHandlerWithResyncPeriod", zap.String("gvr", i.gvr.String()), zap.String("handler", fmt.Sprintf("%T", handler)), zap.Duration("resyncPeriod", resyncPeriod))
 	}
 	i.implEventHandler(handler)
-	return nil, nil
+	return fakeResourceEventHandlerRegistration{}, nil
+}
+
+// AddEventHandlerWithOptions implements [k8s_ctr_cache.Informer].
+func (i *fakeClientCacheInformer) AddEventHandlerWithOptions(handler k8s_go_tools_cache.ResourceEventHandler, options k8s_go_tools_cache.HandlerOptions) (k8s_go_tools_cache.ResourceEventHandlerRegistration, error) {
+	resync := time.Duration(0)
+	if options.ResyncPeriod != nil {
+		resync = *options.ResyncPeriod
+	}
+	return i.AddEventHandlerWithResyncPeriod(handler, resync)
+}
+
+// IsStopped implements [k8s_ctr_cache.Informer].
+func (i *fakeClientCacheInformer) IsStopped() bool {
+	if i.parent == nil {
+		return true
+	}
+	select {
+	case <-i.parent.stopSig:
+		return true
+	default:
+		return false
+	}
 }
 
 // AddIndexers implements [k8s_ctr_cache.Informer].

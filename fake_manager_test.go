@@ -41,7 +41,7 @@ func AnExamplePodControllerUnderTest(
 	// Set up the reconciler.
 	// ------------------------------------------------------------
 
-	ctlReconcilerFn := k8s_ctr_reconcile.Func(func(ctx context.Context, req k8s_ctr_reconcile.Request) (k8s_ctr_reconcile.Result, error) {
+	ctlReconcilerFn := k8s_ctr_reconcile.TypedFunc[k8s_ctr_reconcile.Request](func(ctx context.Context, req k8s_ctr_reconcile.Request) (k8s_ctr_reconcile.Result, error) {
 		requestCh <- req
 		return k8s_ctr_reconcile.Result{}, nil
 	})
@@ -59,25 +59,25 @@ func AnExamplePodControllerUnderTest(
 	// Set up the controller event watches.
 	// ------------------------------------------------------------
 
-	// Log all events.
-	evtHandler := &testLoggingEventHandler{logger: logger, next: &k8s_ctr_handler.EnqueueRequestForObject{}}
+	podHandler := &testLoggingTypedEventHandler[*k8s_api_corev1.Pod]{
+		logger: logger,
+		next:   &k8s_ctr_handler.TypedEnqueueRequestForObject[*k8s_api_corev1.Pod]{},
+	}
+	objHandler := &testLoggingTypedEventHandler[k8s_ctr_client.Object]{
+		logger: logger,
+		next:   &k8s_ctr_handler.TypedEnqueueRequestForObject[k8s_ctr_client.Object]{},
+	}
 
-	// Pass all events.
-	evtPredicate := k8s_ctr_predicate.NewPredicateFuncs(func(obj k8s_ctr_client.Object) bool { return true })
+	podPred := k8s_ctr_predicate.NewTypedPredicateFuncs(func(o *k8s_api_corev1.Pod) bool { return true })
+	objPred := k8s_ctr_predicate.NewTypedPredicateFuncs(func(o k8s_ctr_client.Object) bool { return true })
 
-	// Setup example watch for pods.
-	ctl.Watch(
-		k8s_ctr_source.Kind(manager.GetCache(), &k8s_api_corev1.Pod{}),
-		evtHandler,
-		evtPredicate,
-	)
+	if err := ctl.Watch(k8s_ctr_source.Kind(manager.GetCache(), &k8s_api_corev1.Pod{}, podHandler, podPred)); err != nil {
+		return nil, fmt.Errorf("watch pods: %w", err)
+	}
 
-	// Set up example watch for external event.
-	ctl.Watch(
-		&k8s_ctr_source.Channel{Source: eventCh},
-		evtHandler,
-		evtPredicate,
-	)
+	if err := ctl.Watch(k8s_ctr_source.Channel(eventCh, objHandler, k8s_ctr_source.WithPredicates[k8s_ctr_client.Object, k8s_ctr_reconcile.Request](objPred))); err != nil {
+		return nil, fmt.Errorf("watch channel: %w", err)
+	}
 
 	return ctl, nil
 }
@@ -273,33 +273,32 @@ func (r *testReconciler) Reconcile(ctx context.Context, req k8s_ctr_reconcile.Re
 	return k8s_ctr_reconcile.Result{}, nil
 }
 
-type testLoggingEventHandler struct {
+type testLoggingTypedEventHandler[O k8s_ctr_client.Object] struct {
 	logger *zap.Logger
-	next   k8s_ctr_handler.EventHandler
+	next   k8s_ctr_handler.TypedEventHandler[O, k8s_ctr_reconcile.Request]
 }
 
-var _ k8s_ctr_handler.EventHandler = (*testLoggingEventHandler)(nil)
+var (
+	_ k8s_ctr_handler.TypedEventHandler[*k8s_api_corev1.Pod, k8s_ctr_reconcile.Request] = (*testLoggingTypedEventHandler[*k8s_api_corev1.Pod])(nil)
+	_ k8s_ctr_handler.TypedEventHandler[k8s_ctr_client.Object, k8s_ctr_reconcile.Request] = (*testLoggingTypedEventHandler[k8s_ctr_client.Object])(nil)
+)
 
-// Create implements [k8s_ctr_handler.EventHandler].
-func (h *testLoggingEventHandler) Create(ctx context.Context, evt k8s_ctr_event.CreateEvent, q k8s_go_workqueue.RateLimitingInterface) {
+func (h *testLoggingTypedEventHandler[O]) Create(ctx context.Context, evt k8s_ctr_event.TypedCreateEvent[O], q k8s_go_workqueue.TypedRateLimitingInterface[k8s_ctr_reconcile.Request]) {
 	h.logger.Info("Received Create event", zap.String("event", "Create"), zap.Any("event", evt))
 	h.next.Create(ctx, evt, q)
 }
 
-// Update implements [k8s_ctr_handler.EventHandler].
-func (h *testLoggingEventHandler) Update(ctx context.Context, evt k8s_ctr_event.UpdateEvent, q k8s_go_workqueue.RateLimitingInterface) {
+func (h *testLoggingTypedEventHandler[O]) Update(ctx context.Context, evt k8s_ctr_event.TypedUpdateEvent[O], q k8s_go_workqueue.TypedRateLimitingInterface[k8s_ctr_reconcile.Request]) {
 	h.logger.Info("Received Update event", zap.String("event", "Update"), zap.Any("event", evt))
 	h.next.Update(ctx, evt, q)
 }
 
-// Delete implements [k8s_ctr_handler.EventHandler].
-func (h *testLoggingEventHandler) Delete(ctx context.Context, evt k8s_ctr_event.DeleteEvent, q k8s_go_workqueue.RateLimitingInterface) {
+func (h *testLoggingTypedEventHandler[O]) Delete(ctx context.Context, evt k8s_ctr_event.TypedDeleteEvent[O], q k8s_go_workqueue.TypedRateLimitingInterface[k8s_ctr_reconcile.Request]) {
 	h.logger.Info("Received Delete event", zap.String("event", "Delete"), zap.Any("event", evt))
 	h.next.Delete(ctx, evt, q)
 }
 
-// Generic implements [k8s_ctr_handler.EventHandler].
-func (h *testLoggingEventHandler) Generic(ctx context.Context, evt k8s_ctr_event.GenericEvent, q k8s_go_workqueue.RateLimitingInterface) {
+func (h *testLoggingTypedEventHandler[O]) Generic(ctx context.Context, evt k8s_ctr_event.TypedGenericEvent[O], q k8s_go_workqueue.TypedRateLimitingInterface[k8s_ctr_reconcile.Request]) {
 	h.logger.Info("Received Generic event", zap.String("event", "Generic"), zap.Any("event", evt))
 	h.next.Generic(ctx, evt, q)
 }
